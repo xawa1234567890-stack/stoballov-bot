@@ -66,11 +66,12 @@ async def cmd_vip(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        target_id = int(message.text.split()[1])
+        parts = message.text.split()
+        target_id = int(parts.pop())
         user = get_user(target_id)
         user["vip"] = True
         await message.answer(f"✅ Пользователю `{target_id}` активирован VIP-безлимит!", parse_mode="Markdown")
-        await bot.send_message(target_id, "🎉 **Оплата подтверждена!** Вам открыт безлимитный доступ ко всем предметам на 30 дней!", parse_mode="Markdown")
+        await bot.send_message(target_id, "🎉 **Оплата подтверждена!** Вам открыт безлитный доступ ко всем предметам на 30 дней!", parse_mode="Markdown")
     except Exception:
         await message.answer("Используйте формат: `/vip ID_ученика`", parse_mode="Markdown")
 
@@ -108,8 +109,8 @@ async def handle_text(message: types.Message):
             user["tries"] += 1
         user["history"].append({"role": "user", "content": message.text})
 
-    if len(user["history"]) > 11:
-        user["history"] = [user["history"][0]] + user["history"][-10:]
+    while len(user["history"]) > 11:
+        user["history"].pop(1)
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
@@ -119,7 +120,8 @@ async def handle_text(message: types.Message):
             messages=user["history"],
             temperature=0.6
         )
-        reply = response.choices[0].message.content
+        first_choice = next(iter(response.choices))
+        reply = first_choice.message.content
         user["history"].append({"role": "assistant", "content": reply})
         await message.answer(reply)
     except Exception as e:
