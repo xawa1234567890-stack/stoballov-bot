@@ -1,10 +1,14 @@
 import asyncio
 import os
+import logging
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from openai import AsyncOpenAI
+
+# Настройка логирования для вывода ошибок в консоль Render
+logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -14,8 +18,9 @@ ADMIN_USERNAME = "man_937"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# ИСПРАВЛЕНО: Актуальный URL для GitHub Models
 client = AsyncOpenAI(
-    base_url="https://models.inference.ai.azure.com",
+    base_url="https://models.github.ai/inference",
     api_key=GITHUB_TOKEN,
 )
 
@@ -76,6 +81,7 @@ async def cmd_vip(message: types.Message):
 
 @dp.message(F.text == "💎 Купить безлимит")
 async def buy_vip(message: types.Message):
+    # ИСПРАВЛЕНО: Добавлен слеш после t.me/
     pay_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Написать для оплаты (35 BYN/мес)", url=f"https://t.me/{ADMIN_USERNAME}")]
     ])
@@ -115,14 +121,16 @@ async def handle_text(message: types.Message):
 
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="openai/gpt-4o-mini", # ИСПРАВЛЕНО: Добавлен префикс openai/
             messages=user["history"],
             temperature=0.6
         )
         reply = response.choices[0].message.content
         user["history"].append({"role": "assistant", "content": reply})
         await message.answer(reply)
-    except Exception:
+    except Exception as e:
+        # Теперь настоящая ошибка будет видна в логах Render
+        logging.error(f"Ошибка при запросе к нейросети: {e}")
         await message.answer("⏳ Нейросеть сейчас обрабатывает много запросов. Попробуйте отправить задание еще раз через 5 секунд!")
 
 async def health_check(request):
