@@ -1,149 +1,221 @@
 import asyncio
 import os
 import logging
-from aiohttp import web
+import aiosqlite
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from aiogram.exceptions import TelegramBadRequest
 from openai import AsyncOpenAI
 
-# Настройка логирования для вывода ошибок в консоль Render
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-ADMIN_USERNAME = "man_937"
+# Ваш ID (8866302496)
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8866302496")) 
+
+if not BOT_TOKEN or not GITHUB_TOKEN:
+    raise ValueError("Не заданы BOT_TOKEN или GITHUB_TOKEN!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ИСПРАВЛЕНО: Актуальный URL для GitHub Models
 client = AsyncOpenAI(
     base_url="https://models.github.ai/inference",
     api_key=GITHUB_TOKEN,
+    timeout=60.0,
+    max_retries=2
 )
 
-users_db = {}
+SYSTEM_PROMPT = """Ты — ИИ-репетитор "100 Баллов AI". Твоя специализация — подготовка к ЦТ и ЦЭ (Беларусь) по математике, русскому и английскому языкам.
+Твои правила:
+1. Решай задачи по строгим стандартам РИКЗ.
+2. Объясняй правила и указывай на типичные "ловушки" в заданиях.
+3. Если пользователь просит, составляй тренировочные тесты.
+4. Общайся дружелюбно, мотивируй ученика.
+5. Структурируй ответ: сначала краткий правильный ответ, затем подробное объяснение."""
 
-main_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📐 Математика"), KeyboardButton(text="✍️ Русский язык")],
-        [KeyboardButton(text="🇬🇧 Английский язык"), KeyboardButton(text="📚 Все предметы ЦТ/ЦЭ")],
-        [KeyboardButton(text="📝 Мини-тест РИКЗ"), KeyboardButton(text="💎 Купить безлимит")]
-    ],
-    resize_keyboard=True
-)
+DB_NAME = "users.db"
 
-SYSTEM_PROMPT = """
-Ты — профессиональный репетитор из Беларуси по подготовке к ЦТ и ЦЭ (стандарты РИКЗ) по всем предметам (Математика, Русский, Английский, Физика, Химия, Биология, История Беларуси, Обществоведение).
-Правила:
-1. Точные науки: сначала дай четкий ответ, затем распиши пошаговое решение с формулами и укажи ловушки РИКЗ (ОДЗ, знаки, единицы СИ).
-2. Языки: объясняй правила орфографии, пунктуации и грамматики строго по программам РБ. Выделяй верные буквы/слова и кратко поясняй.
-3. Если ученик просит мини-тест — составь 3 задания в формате ЦТ с вариантами ответов и жди его ответа для проверки.
-Отвечай понятно, дружелюбно, без воды.
-"""
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        # ИЗМЕНЕНИЕ: Теперь по умолчанию выдается 1 запрос
+        await db.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, requests_left INTEGER DEFAULT 1)")
+        await db.commit()
 
-def get_user(user_id):
-    if user_id not in users_db:
-        users_db[user_id] = {
-            "tries": 0,
-            "vip": False,
-            "history": [{"role": "system", "content": SYSTEM_PROMPT}]
-        }
-    return users_db[user_id]
+async def get_user_limit(user_id: int) -> int:
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT requests_left FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                # ИЗМЕНЕНИЕ: При первом входе даем 1 запрос
+                await db.execute("INSERT INTO users (user_id, requests_left) VALUES (?, 1)", (user_id,))
+                await db.commit()
+                return 1
+            return row[0]
 
-@dp.message(CommandStart())
-async def cmd_start(message: types.Message):
-    user = get_user(message.from_user.id)
-    left = "Безлимит (VIP)" if user["vip"] else f"{max(0, 3 - user['tries'])} из 3"
-    await message.answer(
-        f"Привет, {message.from_user.first_name}! 🎓\n"
-        f"Я **100 Баллов AI** — твой репетитор для подготовки к **ЦТ и ЦЭ**.\n\n"
-        f"🎁 Бесплатных разборов осталось: **{left}**\n"
-        f"Выбери предмет кнопкой ниже или сразу напиши задачу 👇",
-        reply_markup=main_kb,
-        parse_mode="Markdown"
+async def decrement_limit(user_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET requests_left = requests_left - 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+async def grant_unlimited(user_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""
+            INSERT INTO users (user_id, requests_left) VALUES (?, 9999) 
+            ON CONFLICT(user_id) DO UPDATE SET requests_left = 9999
+        """, (user_id,))
+        await db.commit()
+
+def get_main_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="📐 Математика")
+    builder.button(text="✍️ Русский язык")
+    builder.button(text="🇬🇧 Английский язык")
+    builder.button(text="📚 Все предметы ЦТ/ЦЭ")
+    builder.button(text="📝 Мини-тест РИКЗ")
+    builder.button(text="💎 Купить безлимит")
+    builder.adjust(2, 2, 2) 
+    return builder.as_markup(resize_keyboard=True)
+
+def get_payment_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💳 Написать для оплаты (35 BYN/мес)", url="https://t.me/man_937")
+    return builder.as_markup()
+
+async def send_payment_info(message_or_call, user_id: int):
+    text = (
+        "🚀 <b>Безлимитный доступ к 100 Баллов AI на 30 дней</b>\n\n"
+        "✅ Разбор любых задач по всем предметам ЦТ и ЦЭ\n"
+        "✅ Объяснение всех ловушек РИКЗ\n"
+        "✅ Генерация тренировочных тестов 24/7\n\n"
+        "💰 <b>Стоимость: 35 BYN</b> (дешевле одного занятия с репетитором).\n"
+        f"<b>Ваш ID для активации:</b> <code>{user_id}</code>\n\n"
+        "Нажмите кнопку ниже, чтобы получить реквизиты (карта РБ / ЕРИП):"
     )
+    
+    if isinstance(message_or_call, types.CallbackQuery):
+        await message_or_call.message.answer(text, reply_markup=get_payment_keyboard(), parse_mode="HTML")
+        await message_or_call.answer()
+    else:
+        await message_or_call.answer(text, reply_markup=get_payment_keyboard(), parse_mode="HTML")
 
-@dp.message(Command("vip"))
-async def cmd_vip(message: types.Message):
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    user_id = message.from_user.id
+    limit = await get_user_limit(user_id)
+    
+    # ИЗМЕНЕНИЕ: Текст теперь говорит про 1 запрос
+    welcome_text = (
+        f"Привет, {message.from_user.first_name}! 🎓\n"
+        f"Я 100 Баллов AI — твой репетитор для подготовки к ЦТ и ЦЭ.\n\n"
+        f"🎁 Бесплатных разборов осталось: <b>{limit} из 1</b>\n"
+        f"Выбери предмет кнопкой ниже или сразу напиши задачу 👇"
+    )
+    
+    await message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_keyboard())
+
+@dp.callback_query(F.data == "buy_unlimited")
+async def process_buy_callback(callback: types.CallbackQuery):
+    await send_payment_info(callback, callback.from_user.id)
+
+@dp.message(Command("grant"))
+async def cmd_grant(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return 
+    
+    args = message.text.split()
+    if len(args) != 2 or not args[1].isdigit():
+        await message.answer("⚠️ Использование: <code>/grant ID_клиента</code>", parse_mode="HTML")
+        return
+    
+    client_id = int(args[1])
+    await grant_unlimited(client_id)
+    await message.answer(f"✅ Клиенту <code>{client_id}</code> успешно выдан безлимит!", parse_mode="HTML")
+    
+    try:
+        await bot.send_message(client_id, "🎉 Ура! Ваш безлимитный доступ активирован. Можете задавать любые вопросы по ЦТ и ЦЭ!")
+    except Exception:
+        pass
+
+@dp.message(Command("check"))
+async def cmd_check(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    try:
-        target_id = int(message.text.split()[1])
-        user = get_user(target_id)
-        user["vip"] = True
-        await message.answer(f"✅ Пользователю `{target_id}` активирован VIP-безлимит!", parse_mode="Markdown")
-        await bot.send_message(target_id, "🎉 **Оплата подтверждена!** Вам открыт безлимитный доступ ко всем предметам на 30 дней!", parse_mode="Markdown")
-    except Exception:
-        await message.answer("Используйте формат: `/vip ID_ученика`", parse_mode="Markdown")
-
-@dp.message(F.text == "💎 Купить безлимит")
-async def buy_vip(message: types.Message):
-    # ИСПРАВЛЕНО: Добавлен слеш после t.me/
-    pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Написать для оплаты (35 BYN/мес)", url=f"https://t.me/{ADMIN_USERNAME}")]
-    ])
-    await message.answer(
-        f"🚀 **Безлимитный доступ к 100 Баллов AI на 30 дней**\n\n"
-        f"✅ Разбор любых задач по всем предметам ЦТ и ЦЭ\n"
-        f"✅ Объяснение всех ловушек РИКЗ\n"
-        f"✅ Генерация тренировочных тестов 24/7\n\n"
-        f"💰 Стоимость: **35 BYN** (дешевле одного занятия с репетитором).\n"
-        f"Ваш ID для активации: `{message.from_user.id}`\n\n"
-        f"Нажмите кнопку ниже, чтобы получить реквизиты (карта РБ / ЕРИП):",
-        reply_markup=pay_kb,
-        parse_mode="Markdown"
-    )
+    
+    args = message.text.split()
+    if len(args) != 2 or not args[1].isdigit():
+        await message.answer("⚠️ Использование: <code>/check ID_клиента</code>", parse_mode="HTML")
+        return
+        
+    client_id = int(args[1])
+    limit = await get_user_limit(client_id)
+    await message.answer(f"📊 У клиента <code>{client_id}</code> осталось запросов: <b>{limit}</b>", parse_mode="HTML")
 
 @dp.message(F.text)
-async def handle_text(message: types.Message):
+async def handle_question(message: types.Message):
     user_id = message.from_user.id
-    user = get_user(user_id)
+    text = message.text
 
-    if not user["vip"] and user["tries"] >= 3 and user_id != ADMIN_ID:
-        await buy_vip(message)
+    if text == "💎 Купить безлимит":
+        await send_payment_info(message, user_id)
         return
 
-    subjects = ["📐 Математика", "✍️ Русский язык", "🇬🇧 Английский язык", "📚 Все предметы ЦТ/ЦЭ", "📝 Мини-тест РИКЗ"]
-    if message.text in subjects:
-        user["history"].append({"role": "user", "content": f"Я выбрал раздел: {message.text}. Поприветствуй и предложи прислать задание или начать тест."})
-    else:
-        if not user["vip"] and user_id != ADMIN_ID:
-            user["tries"] += 1
-        user["history"].append({"role": "user", "content": message.text})
+    if text == "📝 Мини-тест РИКЗ":
+        await message.answer("Отправь мне название предмета для мини-теста (например: 'Сделай мини-тест по математике').")
+        return
+        
+    if text in ["📐 Математика", "✍️ Русский язык", "🇬🇧 Английский язык", "📚 Все предметы ЦТ/ЦЭ"]:
+        await message.answer(f"Отлично! Выбран раздел: <b>{text}</b>. Отправь мне свою задачу или вопрос.", parse_mode="HTML")
+        return
 
-    if len(user["history"]) > 11:
-        user["history"] = [user["history"][0]] + user["history"][-10:]
+    limit = await get_user_limit(user_id)
+    if limit <= 0:
+        await message.answer(
+            "😔 У тебя закончились бесплатные разборы.\n"
+            "Купи безлимит, чтобы продолжить подготовку!",
+            reply_markup=get_payment_keyboard()
+        )
+        return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-
+    
     try:
         response = await client.chat.completions.create(
-            model="openai/gpt-4o-mini", # ИСПРАВЛЕНО: Добавлен префикс openai/
-            messages=user["history"],
-            temperature=0.6
+            model="openai/gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text}
+            ],
+            max_tokens=1500,
+            temperature=0.5
         )
-        reply = response.choices[0].message.content
-        user["history"].append({"role": "assistant", "content": reply})
-        await message.answer(reply)
-    except Exception as e:
-        # Теперь настоящая ошибка будет видна в логах Render
-        logging.error(f"Ошибка при запросе к нейросети: {e}")
-        await message.answer("⏳ Нейросеть сейчас обрабатывает много запросов. Попробуйте отправить задание еще раз через 5 секунд!")
+        
+        answer = response.choices[0].message.content
+        
+        await decrement_limit(user_id)
+        new_limit = limit - 1
+        
+        if new_limit <= 0:
+            answer += "\n\n⚠️ <b>Это был твой единственный бесплатный разбор. Купи безлимит, чтобы продолжить!</b>"
+            await message.answer(answer, parse_mode="HTML")
+            await message.answer("👇", reply_markup=get_payment_keyboard())
+        else:
+            # На случай, если у пользователя уже есть купленный безлимит
+            answer += f"\n\n🎁 <i>Осталось бесплатных разборов: {new_limit}</i>"
+            await message.answer(answer, parse_mode="HTML")
 
-async def health_check(request):
-    return web.Response(text="Bot is running!")
+    except TelegramBadRequest:
+        await message.answer(answer) 
+    except Exception as e:
+        logging.error(f"Ошибка API: {e}")
+        await message.answer("⚠️ Произошла ошибка на сервере ИИ. Попробуй еще раз.")
 
 async def main():
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
+    await init_db()
+    logging.info("🚀 Бот '100 Баллов AI' успешно запущен!")
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
