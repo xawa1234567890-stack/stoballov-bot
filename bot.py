@@ -14,11 +14,8 @@ ADMIN_USERNAME = "man_937"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-AI_URL = "https://" + "models.github.ai" + "/inference"
-PAY_URL = "https://" + "t.me/" + ADMIN_USERNAME
-
 client = AsyncOpenAI(
-    base_url=AI_URL,
+    base_url="https://models.inference.ai.azure.com",
     api_key=GITHUB_TOKEN,
 )
 
@@ -69,8 +66,7 @@ async def cmd_vip(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        parts = message.text.split()
-        target_id = int(parts.pop())
+        target_id = int(message.text.split()[1])
         user = get_user(target_id)
         user["vip"] = True
         await message.answer(f"✅ Пользователю `{target_id}` активирован VIP-безлимит!", parse_mode="Markdown")
@@ -81,14 +77,14 @@ async def cmd_vip(message: types.Message):
 @dp.message(F.text == "💎 Купить безлимит")
 async def buy_vip(message: types.Message):
     pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Написать для оплаты (35 BYN/мес)", url=PAY_URL)]
+        [InlineKeyboardButton(text="💳 Написать для оплаты (35 BYN/мес)", url=f"https://t.me/{ADMIN_USERNAME}")]
     ])
     await message.answer(
         f"🚀 **Безлимитный доступ к 100 Баллов AI на 30 дней**\n\n"
         f"✅ Разбор любых задач по всем предметам ЦТ и ЦЭ\n"
         f"✅ Объяснение всех ловушек РИКЗ\n"
         f"✅ Генерация тренировочных тестов 24/7\n\n"
-        f"💰 Стоимость: **25 BYN** (дешевле одного занятия с репетитором).\n"
+        f"💰 Стоимость: **35 BYN** (дешевле одного занятия с репетитором).\n"
         f"Ваш ID для активации: `{message.from_user.id}`\n\n"
         f"Нажмите кнопку ниже, чтобы получить реквизиты (карта РБ / ЕРИП):",
         reply_markup=pay_kb,
@@ -112,26 +108,22 @@ async def handle_text(message: types.Message):
             user["tries"] += 1
         user["history"].append({"role": "user", "content": message.text})
 
-    while len(user["history"]) > 11:
-        user["history"].pop(1)
+    if len(user["history"]) > 11:
+        user["history"] = [user["history"][0]] + user["history"][-10:]
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
         response = await client.chat.completions.create(
-            model="openai/gpt-4o-mini",
+            model="gpt-4o-mini",
             messages=user["history"],
             temperature=0.6
         )
-        first_choice = next(iter(response.choices))
-        reply = first_choice.message.content
+        reply = response.choices[0].message.content
         user["history"].append({"role": "assistant", "content": reply})
         await message.answer(reply)
-    except Exception as e:
-            except Exception as e:
-        await message.answer(f"Ошибка: {e}")
-
-        
+    except Exception:
+        await message.answer("⏳ Нейросеть сейчас обрабатывает много запросов. Попробуйте отправить задание еще раз через 5 секунд!")
 
 async def health_check(request):
     return web.Response(text="Bot is running!")
