@@ -128,8 +128,10 @@ async def handle_text(message: types.Message):
         user["history"].append({"role": "assistant", "content": reply})
         await message.answer(reply)
     except Exception as e:
-        print("Ошибка API:", e)
-        await message.answer("⏳ Нейросеть сейчас обрабатывает много запросов. Попробуйте отправить задание еще раз через 5 секунд!")
+            except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+
+        
 
 async def health_check(request):
     return web.Response(text="Bot is running!")
