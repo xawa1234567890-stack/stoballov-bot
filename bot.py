@@ -14,8 +14,11 @@ ADMIN_USERNAME = "man_937"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+AI_URL = "https://" + "models.github.ai" + "/inference"
+PAY_URL = "https://" + "t.me/" + ADMIN_USERNAME
+
 client = AsyncOpenAI(
-    base_url="https://github.ai",
+    base_url=AI_URL,
     api_key=GITHUB_TOKEN,
 )
 
@@ -71,14 +74,14 @@ async def cmd_vip(message: types.Message):
         user = get_user(target_id)
         user["vip"] = True
         await message.answer(f"✅ Пользователю `{target_id}` активирован VIP-безлимит!", parse_mode="Markdown")
-        await bot.send_message(target_id, "🎉 **Оплата подтверждена!** Вам открыт безлитный доступ ко всем предметам на 30 дней!", parse_mode="Markdown")
+        await bot.send_message(target_id, "🎉 **Оплата подтверждена!** Вам открыт безлимитный доступ ко всем предметам на 30 дней!", parse_mode="Markdown")
     except Exception:
         await message.answer("Используйте формат: `/vip ID_ученика`", parse_mode="Markdown")
 
 @dp.message(F.text == "💎 Купить безлимит")
 async def buy_vip(message: types.Message):
     pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Написать для оплаты (25 BYN/мес)", url=f"https://t.me{ADMIN_USERNAME}")]
+        [InlineKeyboardButton(text="💳 Написать для оплаты (35 BYN/мес)", url=PAY_URL)]
     ])
     await message.answer(
         f"🚀 **Безлимитный доступ к 100 Баллов AI на 30 дней**\n\n"
