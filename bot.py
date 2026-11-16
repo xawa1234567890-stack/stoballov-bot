@@ -15,7 +15,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 client = AsyncOpenAI(
-    base_url="https://azure.com",
+    base_url="https://github.ai",
     api_key=GITHUB_TOKEN,
 )
 
@@ -66,7 +66,7 @@ async def cmd_vip(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        target_id = int(message.text.split())
+        target_id = int(message.text.split()[1])
         user = get_user(target_id)
         user["vip"] = True
         await message.answer(f"✅ Пользователю `{target_id}` активирован VIP-безлимит!", parse_mode="Markdown")
@@ -109,20 +109,21 @@ async def handle_text(message: types.Message):
         user["history"].append({"role": "user", "content": message.text})
 
     if len(user["history"]) > 11:
-        user["history"] = [user["history"]] + user["history"][-10:]
+        user["history"] = [user["history"][0]] + user["history"][-10:]
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="openai/gpt-4o-mini",
             messages=user["history"],
             temperature=0.6
         )
-        reply = response.choices.message.content
+        reply = response.choices[0].message.content
         user["history"].append({"role": "assistant", "content": reply})
         await message.answer(reply)
-    except Exception:
+    except Exception as e:
+        print("Ошибка API:", e)
         await message.answer("⏳ Нейросеть сейчас обрабатывает много запросов. Попробуйте отправить задание еще раз через 5 секунд!")
 
 async def health_check(request):
